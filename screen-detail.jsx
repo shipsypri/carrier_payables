@@ -1,0 +1,227 @@
+// Invoice detail screen — PDF preview + line items
+function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
+  const [filter, setFilter] = React.useState('all'); // all | flagged | matched
+  const [openMismatch, setOpenMismatch] = React.useState(null); // index of open popup
+  const [pdfPage, setPdfPage] = React.useState(1);
+  const [zoom, setZoom] = React.useState(80);
+
+  const items = lineItems || [];
+  const flaggedCount = items.filter(i => i.match !== 'matched').length;
+  const matchedCount = items.filter(i => i.match === 'matched').length;
+
+  const filteredItems = items.filter(i => {
+    if (filter === 'flagged') return i.match !== 'matched';
+    if (filter === 'matched') return i.match === 'matched';
+    return true;
+  });
+
+  return (
+    <>
+      <button className="back-link" onClick={onBack}>
+        {Icon.back(14)} Back to Carrier Payables
+      </button>
+
+      <div className="detail-grid">
+        {/* PDF viewer */}
+        <div className="pdf-viewer">
+          <div className="pdf-toolbar">
+            <span className="file">{invoice.pdfFile}</span>
+            <button className="active" title="Search">{Icon.zoomIn(13)}</button>
+            <span style={{ color: 'var(--muted)', fontSize: 11 }}>{zoom}%</span>
+            <button title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 10))}>+</button>
+            <button title="Zoom out" onClick={() => setZoom(z => Math.max(40, z - 10))}>−</button>
+            <button title="Reset">{Icon.refresh(13)}</button>
+            <button title="Prev" onClick={() => setPdfPage(p => Math.max(1, p - 1))}>‹</button>
+            <span className="nav">{pdfPage} / {invoice.pages}</span>
+            <button title="Next" onClick={() => setPdfPage(p => Math.min(invoice.pages, p + 1))}>›</button>
+            <button title="Fullscreen">{Icon.expand(13)}</button>
+          </div>
+          <div className="pdf-body">
+            <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
+              <div className="pdf-banner">
+                <div className="logo">{invoice.carrier.split(' ')[0].toUpperCase()}</div>
+                <div style={{ fontSize: 7, textAlign: 'right' }}>
+                  <div style={{ fontWeight: 700 }}>TAX INVOICE</div>
+                  <div>No. {invoice.invoiceNo}</div>
+                </div>
+              </div>
+              <div className="pdf-content">
+                <h3>TAX INVOICE SUMMARY</h3>
+                <div className="meta-grid">
+                  <div>
+                    <b>Bill To</b>
+                    <div>Coates Hire Operations Pty Ltd</div>
+                    <div>Level 1, 18 Rodborough Rd</div>
+                    <div>Frenchs Forest NSW 2086</div>
+                  </div>
+                  <div>
+                    <b>Invoice Details</b>
+                    <div>No: {invoice.invoiceNo}</div>
+                    <div>Date: {invoice.invoiceDate}</div>
+                    <div>ABN: {invoice.abn}</div>
+                  </div>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>CN#</th>
+                      <th>Route</th>
+                      <th style={{ textAlign: 'right' }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.slice(0, 8).map((l, i) => (
+                      <tr key={i}>
+                        <td>{l.cn}</td>
+                        <td>{l.from} → {l.to}</td>
+                        <td className="right">{l.amount.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                    {items.length > 8 && (
+                      <tr>
+                        <td colSpan={3} style={{ textAlign: 'center', color: '#94A3B8', fontStyle: 'italic' }}>
+                          + {items.length - 8} more line items...
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+                <div className="totals">
+                  <div className="row"><span>Subtotal (ex GST)</span><span>{(invoice.amount / 1.1).toFixed(2)}</span></div>
+                  <div className="row"><span>GST 10%</span><span>{(invoice.amount - invoice.amount / 1.1).toFixed(2)}</span></div>
+                  <div className="row grand"><span>Total payable AUD</span><span>${invoice.amount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right column */}
+        <div className="detail-right">
+          <div className="detail-header-card">
+            <div className="top">
+              <div>
+                <h2>{invoice.carrier}</h2>
+                <div className="invoice-no">Invoice: {invoice.invoiceNo}</div>
+              </div>
+              <div className="detail-actions">
+                <button
+                  className="btn btn-reject-outlined"
+                  disabled={invoice.status === 'rejected'}
+                  onClick={() => onReject(invoice.id)}
+                >
+                  {Icon.x(13)} Reject
+                </button>
+                <button
+                  className="btn btn-approve"
+                  disabled={invoice.status === 'approved'}
+                  onClick={() => onApprove(invoice.id)}
+                >
+                  {Icon.check(13)} Approve
+                </button>
+                <span className={`ai-pill ${invoice.aiSuggestion}`} style={{ alignSelf: 'center', marginLeft: 4 }}>
+                  {invoice.status === 'approved' ? 'Approved' : invoice.status === 'rejected' ? 'Rejected' : 'Review'}
+                </span>
+              </div>
+            </div>
+            <div className="summary-grid">
+              <div>
+                <div className="stat-label">Invoice Date</div>
+                <div className="stat-value">{invoice.invoiceDate}</div>
+              </div>
+              <div>
+                <div className="stat-label">Grand Total</div>
+                <div className="stat-value">{AUD(invoice.amount)}</div>
+              </div>
+              <div>
+                <div className="stat-label">Line Items</div>
+                <div className="stat-value">{invoice.lineItemsTotal}</div>
+              </div>
+              <div>
+                <div className="stat-label">Flagged / Matched</div>
+                <div className="stat-value">
+                  <span className="stat-flag">{invoice.lineItemsFlagged}</span>
+                  <span style={{ color: 'var(--muted)', fontWeight: 400 }}> / </span>
+                  <span style={{ color: 'var(--approve)' }}>{invoice.lineItemsMatched}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="lines-panel">
+            <div className="lines-panel-head">
+              <h3>Line Items</h3>
+              <div className="filter-pills">
+                <button className={`filter-pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+                  All ({items.length})
+                </button>
+                <button className={`filter-pill ${filter === 'flagged' ? 'active' : ''}`} onClick={() => setFilter('flagged')}>
+                  Flagged ({flaggedCount})
+                </button>
+                <button className={`filter-pill ${filter === 'matched' ? 'active' : ''}`} onClick={() => setFilter('matched')}>
+                  Matched ({matchedCount})
+                </button>
+              </div>
+            </div>
+
+            {filteredItems.length === 0 ? (
+              <div className="empty">No line items in this filter.</div>
+            ) : filteredItems.map((l, i) => {
+              const isFlagged = l.match !== 'matched';
+              const idx = items.indexOf(l);
+              const isOpen = openMismatch === idx;
+              return (
+                <div key={idx} className={`line-item ${isFlagged ? 'flagged' : 'matched'}`}>
+                  <span className="x-circle">
+                    {isFlagged ? Icon.x(11) : Icon.check(11)}
+                  </span>
+                  <div>
+                    <div>
+                      <span className="cn-id">{l.cn}</span>
+                      <span className="route">{l.from} → {l.to}</span>
+                    </div>
+                    <div className="meta">
+                      {l.refId || '—'} · {l.date} · {l.desc}
+                    </div>
+                  </div>
+                  <div className="right-stack">
+                    <div className="amount">{AUD(l.amount)}</div>
+                    <button
+                      className={`match-pill ${l.match}`}
+                      onClick={() => l.mismatch && setOpenMismatch(isOpen ? null : idx)}
+                    >
+                      {l.match === 'matched' ? 'Matched' : l.match === 'partial' ? 'Partial' : 'No match'}
+                      {l.mismatch && Icon.chevDown(10)}
+                    </button>
+                  </div>
+                  {isOpen && l.mismatch && (
+                    <div className="mismatch-pop">
+                      <div className="pop-title">Why this is flagged</div>
+                      <div className="row"><span>{l.mismatch.reason}</span><span></span></div>
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--line)' }}>
+                        <div className="row">
+                          <span>Invoice amount</span>
+                          <span>{AUD(l.mismatch.invoiceAmount)}</span>
+                        </div>
+                        <div className="row">
+                          <span>System amount</span>
+                          <span>{l.mismatch.systemAmount != null ? AUD(l.mismatch.systemAmount) : '—'}</span>
+                        </div>
+                      </div>
+                      {l.mismatch.expected && (
+                        <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--line)', fontStyle: 'italic' }}>
+                          {l.mismatch.expected}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+window.DetailScreen = DetailScreen;
