@@ -4,6 +4,55 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
   const [openMismatch, setOpenMismatch] = React.useState(null); // index of open popup
   const [pdfPage, setPdfPage] = React.useState(1);
   const [zoom, setZoom] = React.useState(80);
+  const [pdfDoc, setPdfDoc] = React.useState(null);
+  const [pdfError, setPdfError] = React.useState(null);
+  const canvasRef = React.useRef(null);
+
+  // Load PDF.js once and open the file
+  React.useEffect(() => {
+    let cancelled = false;
+    setPdfDoc(null);
+    setPdfError(null);
+    setPdfPage(1);
+    (async () => {
+      try {
+        if (!window.pdfjsLib) {
+          // Use native dynamic import; bypass Babel's CommonJS transform
+          // by going through eval (window-level import is preserved)
+          const dynImport = new Function('u', 'return import(u)');
+          const mod = await dynImport('https://mozilla.github.io/pdf.js/build/pdf.mjs');
+          mod.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
+          window.pdfjsLib = mod;
+        }
+        const task = window.pdfjsLib.getDocument(invoice.pdfUrl || invoice.pdfFile);
+        const doc = await task.promise;
+        if (!cancelled) setPdfDoc(doc);
+      } catch (e) {
+        if (!cancelled) setPdfError(e.message || 'Could not load PDF');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [invoice.pdfFile, invoice.pdfUrl]);
+
+  // Render the current page whenever doc/page/zoom changes
+  React.useEffect(() => {
+    if (!pdfDoc || !canvasRef.current) return;
+    let cancelled = false;
+    (async () => {
+      const page = await pdfDoc.getPage(pdfPage);
+      if (cancelled) return;
+      const scale = zoom / 100 * 1.4;
+      const viewport = page.getViewport({ scale });
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+    })();
+    return () => { cancelled = true; };
+  }, [pdfDoc, pdfPage, zoom]);
+
+  const totalPages = pdfDoc ? pdfDoc.numPages : invoice.pages;
 
   const items = lineItems || [];
   const flaggedCount = items.filter(i => i.match !== 'matched').length;
@@ -22,77 +71,29 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
       </button>
 
       <div className="detail-grid">
-        {/* PDF viewer */}
+        {/* PDF viewer — renders the real PDF via PDF.js */}
         <div className="pdf-viewer">
           <div className="pdf-toolbar">
-            <span className="file">{invoice.pdfFile}</span>
-            <button className="active" title="Search">{Icon.zoomIn(13)}</button>
+            <span className="file" title={invoice.pdfFile}>{invoice.pdfFile}</span>
             <span style={{ color: 'var(--muted)', fontSize: 11 }}>{zoom}%</span>
             <button title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 10))}>+</button>
             <button title="Zoom out" onClick={() => setZoom(z => Math.max(40, z - 10))}>−</button>
-            <button title="Reset">{Icon.refresh(13)}</button>
-            <button title="Prev" onClick={() => setPdfPage(p => Math.max(1, p - 1))}>‹</button>
-            <span className="nav">{pdfPage} / {invoice.pages}</span>
-            <button title="Next" onClick={() => setPdfPage(p => Math.min(invoice.pages, p + 1))}>›</button>
-            <button title="Fullscreen">{Icon.expand(13)}</button>
+            <button title="Prev page" onClick={() => setPdfPage(p => Math.max(1, p - 1))}>‹</button>
+            <span className="nav">{pdfPage} / {totalPages}</span>
+            <button title="Next page" onClick={() => setPdfPage(p => Math.min(totalPages, p + 1))}>›</button>
+            <button title="Open in new tab" onClick={() => window.open(invoice.pdfUrl || invoice.pdfFile, '_blank')}>
+              {Icon.expand(13)}
+            </button>
           </div>
-          <div className="pdf-body">
-            <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
-              <div className="pdf-banner">
-                <div className="logo">{invoice.carrier.split(' ')[0].toUpperCase()}</div>
-                <div style={{ fontSize: 7, textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700 }}>TAX INVOICE</div>
-                  <div>No. {invoice.invoiceNo}</div>
-                </div>
+          <div className="pdf-body" style={{ overflow: 'auto', padding: 16, minHeight: 720, maxHeight: 720 }}>
+            {pdfError && (
+              <div style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center', padding: 40 }}>
+                Could not load PDF: {pdfError}
               </div>
-              <div className="pdf-content">
-                <h3>TAX INVOICE SUMMARY</h3>
-                <div className="meta-grid">
-                  <div>
-                    <b>Bill To</b>
-                    <div>Coates Hire Operations Pty Ltd</div>
-                    <div>Level 1, 18 Rodborough Rd</div>
-                    <div>Frenchs Forest NSW 2086</div>
-                  </div>
-                  <div>
-                    <b>Invoice Details</b>
-                    <div>No: {invoice.invoiceNo}</div>
-                    <div>Date: {invoice.invoiceDate}</div>
-                    <div>ABN: {invoice.abn}</div>
-                  </div>
-                </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>CN#</th>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.slice(0, 8).map((l, i) => (
-                      <tr key={i}>
-                        <td>{l.cn}</td>
-                        <td>{l.from} → {l.to}</td>
-                        <td className="right">{l.amount.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                    {items.length > 8 && (
-                      <tr>
-                        <td colSpan={3} style={{ textAlign: 'center', color: '#94A3B8', fontStyle: 'italic' }}>
-                          + {items.length - 8} more line items...
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-                <div className="totals">
-                  <div className="row"><span>Subtotal (ex GST)</span><span>{(invoice.amount / 1.1).toFixed(2)}</span></div>
-                  <div className="row"><span>GST 10%</span><span>{(invoice.amount - invoice.amount / 1.1).toFixed(2)}</span></div>
-                  <div className="row grand"><span>Total payable AUD</span><span>${invoice.amount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</span></div>
-                </div>
-              </div>
-            </div>
+            )}
+            {!pdfError && (
+              <canvas ref={canvasRef} style={{ display: 'block', margin: '0 auto', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', maxWidth: '100%' }} />
+            )}
           </div>
         </div>
 

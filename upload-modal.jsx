@@ -1,196 +1,331 @@
-// Upload Invoice modal — simulates an AI extraction + classification pipeline.
-// Outcome can be 'approve', 'review', or 'reject' depending on what the AI
-// "finds" in the PDF. The result is shown to the user before they confirm,
-// so it feels like a real AI doing real work.
+// Upload Invoice modal — actually parses the uploaded PDF and extracts real data.
+// Carrier name, invoice number, date, total, and every line item come from the PDF text.
+// AI "match" simulation: most rows match dispatch, a small share fail (rate variance,
+// missing trip ID, etc.) so the result feels real. Trip "DD25673055-PENR" is treated
+// as a known no-match per ops feedback (not in dispatch records).
 
-const CARRIER_POOL = [
-  { name: 'CENTURION TRANSPORT', prefix: 'CTN', abn: '11 119 005 332' },
-  { name: 'RIVET MINING SERVICES', prefix: 'RVT', abn: '85 619 422 887' },
-  { name: 'RON FINEMORE TRANSPORT', prefix: 'RFT', abn: '74 003 487 224' },
-  { name: 'BLENNERS TRANSPORT', prefix: 'BLN', abn: '86 010 567 940' },
-  { name: 'SCOTT\u2019S REFRIGERATED', prefix: 'SRL', abn: '70 095 020 405' },
-  { name: 'AERO LOGISTICS', prefix: 'AER', abn: '47 134 778 113' },
-  { name: 'BORDER EXPRESS', prefix: 'BEX', abn: '37 005 274 856' },
-  { name: 'NQX FREIGHT', prefix: 'NQX', abn: '63 010 580 712' },
-];
+const KNOWN_NO_MATCH_TRIPS = ['DD25673055-PENR'];
 
-const ROUTE_POOL = [
-  ['Sydney', 'Newcastle'], ['Melbourne', 'Geelong'], ['Brisbane', 'Toowoomba'],
-  ['Perth', 'Fremantle'], ['Adelaide', 'Mount Barker'], ['Sydney', 'Wollongong'],
-  ['Brisbane', 'Gold Coast'], ['Melbourne', 'Ballarat'], ['Perth', 'Bunbury'],
-  ['Sydney', 'Canberra'], ['Adelaide', 'Port Augusta'], ['Brisbane', 'Cairns'],
-];
+// ---------- PDF parsing ----------
 
-const DESC_POOL = [
-  'Pallet x12 - General', 'Container x1 40ft', 'Express parcel run',
-  'Refrigerated 20ft', 'B-Double bulk', 'Heavy haul oversize',
-  'eParcel x 180', 'Tipper bulk', 'Premium overnight',
-];
-
-// Decide an outcome with weighted probabilities so the user sees variety.
-// 35% approved, 45% review, 20% rejected.
-function rollOutcome() {
-  const r = Math.random();
-  if (r < 0.35) return 'approve';
-  if (r < 0.80) return 'review';
-  return 'reject';
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  const dynImport = new Function('u', 'return import(u)');
+  const mod = await dynImport('https://mozilla.github.io/pdf.js/build/pdf.mjs');
+  mod.GlobalWorkerOptions.workerSrc = 'https://mozilla.github.io/pdf.js/build/pdf.worker.mjs';
+  window.pdfjsLib = mod;
+  return mod;
 }
 
-function buildExtraction(file) {
-  const carrier = CARRIER_POOL[Math.floor(Math.random() * CARRIER_POOL.length)];
-  const outcome = rollOutcome();
-
-  // Number of line items varies by outcome
-  let total, matched, flagged;
-  if (outcome === 'approve') {
-    total = 3 + Math.floor(Math.random() * 4); // 3-6
-    matched = total;
-    flagged = 0;
-  } else if (outcome === 'review') {
-    total = 4 + Math.floor(Math.random() * 4); // 4-7
-    flagged = 1 + Math.floor(Math.random() * 2); // 1-2
-    matched = total - flagged;
-  } else { // reject
-    total = 5 + Math.floor(Math.random() * 5); // 5-9
-    matched = Math.floor(Math.random() * 2); // 0-1
-    flagged = total - matched;
+async function readPdfText(file) {
+  const lib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const doc = await lib.getDocument({ data: new Uint8Array(buf) }).promise;
+  const pages = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const p = await doc.getPage(i);
+    const tc = await p.getTextContent();
+    // Reconstruct text in reading order using y/x sorting
+    const items = tc.items.map(it => ({
+      str: it.str,
+      x: it.transform[4],
+      y: it.transform[5],
+      h: it.height || 10,
+    }));
+    // Group by row (y bucket)
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
+    const rows = [];
+    let curY = null, cur = [];
+    for (const it of items) {
+      if (curY === null || Math.abs(it.y - curY) < 4) {
+        cur.push(it); curY = curY === null ? it.y : curY;
+      } else {
+        rows.push(cur); cur = [it]; curY = it.y;
+      }
+    }
+    if (cur.length) rows.push(cur);
+    const lines = rows.map(r => r.map(x => x.str).join(' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    pages.push(lines.join('\n'));
   }
+  return { pageCount: doc.numPages, text: pages.join('\n\n') };
+}
 
-  const today = new Date();
-  const formatted = today.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
-  const invNo = (carrier.prefix + '/2026/' +
-    Math.floor(1000 + Math.random() * 8999).toString());
+// ---------- Field extraction ----------
 
-  // Amount roughly proportional to line item count
-  const amount = total * (8000 + Math.random() * 12000);
+const titleCase = (s) => s.replace(/\b([A-Z])([A-Z]+)/g, (m, a, b) => a + b.toLowerCase()).replace(/\s+/g, ' ').trim();
 
-  // Summary pill
-  let summary;
-  if (outcome === 'approve') {
-    summary = { type: 'matched', text: `${matched} matched` };
-  } else if (outcome === 'review') {
-    summary = { type: 'matched', text: `${matched} matched` };
-  } else {
-    if (matched === 0) {
-      summary = { type: 'notfound', text: `${flagged} not found` };
-    } else {
-      summary = { type: 'notfound', text: `${flagged} flagged` };
+function extractFields(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // ---- Carrier name: first line that's not "Page X of Y" or "Tax Invoice"
+  let carrier = '';
+  for (const l of lines) {
+    if (/^Page \d+ of \d+/i.test(l)) continue;
+    if (/^tax invoice/i.test(l)) continue;
+    if (/^invoice/i.test(l)) continue;
+    if (l.length < 3) continue;
+    carrier = l;
+    break;
+  }
+  // Strip trailing phone if appended
+  carrier = carrier.replace(/\s*\+?\d[\d\s\-]{6,}.*$/, '').trim();
+
+  // ---- ABN
+  const abnM = /ABN[:\s]*([\d ]{11,})/i.exec(text);
+  const abn = abnM ? abnM[1].trim().replace(/\s+/g, ' ').replace(/(\d{2})(\d{3})(\d{3})(\d{3})/, '$1 $2 $3 $4') : '';
+
+  // ---- Invoice number — skip "INVOICE TO" address blocks; PDF columns may merge
+  // into a single visual line like "INVOICE TO INVOICE 17196", so we scan all
+  // INVOICE occurrences in the line and take the first that isn't followed by "TO".
+  let invoiceNo = '';
+  outer: for (const l of lines) {
+    const re = /\bINVOICE\b(?:\s+(?:NUMBER|NO\.?|#))?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]*)\b/gi;
+    let m;
+    while ((m = re.exec(l)) !== null) {
+      const tok = m[1];
+      // Skip the "TO" of "INVOICE TO" billing-address block
+      if (/^TO$/i.test(tok)) continue;
+      // Skip generic words that aren't an invoice ID
+      if (/^(NUMBER|NO|DATE|TERMS|DUE)$/i.test(tok)) continue;
+      // Must contain a digit to look like an invoice number
+      if (!/\d/.test(tok)) continue;
+      invoiceNo = tok;
+      break outer;
     }
   }
 
-  // Confidence drops as flagged ratio grows
-  const confidence = Math.round(100 - (flagged / total) * 60 - Math.random() * 5);
-
-  return {
-    file,
-    outcome,
-    invoice: {
-      id: 'inv-' + Date.now(),
-      carrier: carrier.name,
-      invoiceNo: invNo,
-      invoiceDate: formatted,
-      invoiceDateISO: today.toISOString().slice(0, 10),
-      amount,
-      aiSuggestion: outcome,
-      summary,
-      status: outcome === 'approve' ? 'approved' : outcome === 'reject' ? 'rejected' : 'review',
-      pdfFile: file.name,
-      lineItemsTotal: total,
-      lineItemsMatched: matched,
-      lineItemsFlagged: flagged,
-      pages: 2 + Math.floor(Math.random() * 6),
-      abn: carrier.abn,
-      isUploaded: true,
-      confidence,
-    },
-  };
-}
-
-function reasonForFlag(outcome) {
-  if (outcome === 'reject') {
-    const reasons = [
-      'CN# not found in dispatch records',
-      'Duplicate billing detected',
-      'Rate exceeds master agreement',
-      'Surcharge not in rate card',
-      'Cancelled trip — outside policy',
-    ];
-    return reasons[Math.floor(Math.random() * reasons.length)];
+  // ---- Date
+  let invoiceDate = '';
+  let invoiceDateISO = '';
+  const dM = /DATE[\s\t:]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(text);
+  if (dM) {
+    const [d, mo, y] = dM[1].split('/');
+    const yr = y.length === 2 ? '20' + y : y;
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    invoiceDate = `${parseInt(d, 10)} ${months[parseInt(mo, 10) - 1]} ${yr}`;
+    invoiceDateISO = `${yr}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
   }
-  const reasons = [
-    'Rate variance vs. rate card',
-    'Awaiting POD confirmation',
-    'Handling fee mismatch',
-    'Detention exceeds tolerance',
-  ];
-  return reasons[Math.floor(Math.random() * reasons.length)];
+
+  // ---- Total amount
+  let amount = 0;
+  const totM =
+    /TOTAL\s+A?\$?\s*([\d,]+\.\d{2})\s*(?:BALANCE|$)/i.exec(text) ||
+    /BALANCE DUE\s+A?\$?\s*([\d,]+\.\d{2})/i.exec(text) ||
+    /\bTOTAL\s+([\d,]+\.\d{2})\b/i.exec(text);
+  if (totM) amount = parseFloat(totM[1].replace(/,/g, ''));
+
+  return { carrier, abn, invoiceNo, invoiceDate, invoiceDateISO, amount };
 }
 
-function buildLineItems(invoice, outcome) {
+function extractLineItems(text) {
+  // Each line item starts with DD/MM/YYYY, then activity, then "FROM to TO" route,
+  // then "Transaction ID XXXX" (may wrap), then GST/qty/rate/amount line.
   const items = [];
-  for (let i = 0; i < invoice.lineItemsTotal; i++) {
-    const r = ROUTE_POOL[Math.floor(Math.random() * ROUTE_POOL.length)];
-    const isMatched = i < invoice.lineItemsMatched;
-    const desc = DESC_POOL[Math.floor(Math.random() * DESC_POOL.length)];
-    const baseAmt = 5000 + Math.random() * 35000;
-    items.push({
-      cn: invoice.invoiceNo.split('/')[0] + '-' + (10000 + Math.floor(Math.random() * 89999)),
-      refId: isMatched ? 'OD-' + (90000 + Math.floor(Math.random() * 9999)) : null,
-      date: invoice.invoiceDate,
-      from: r[0], to: r[1],
-      desc,
-      amount: baseAmt,
-      match: isMatched ? 'matched' : (outcome === 'reject' ? 'no-match' : (Math.random() > 0.5 ? 'no-match' : 'partial')),
-      mismatch: isMatched ? null : {
-        invoiceAmount: baseAmt,
-        systemAmount: outcome === 'reject' ? null : (Math.random() > 0.5 ? null : baseAmt * 0.85),
-        reason: reasonForFlag(outcome),
-        expected: outcome === 'reject'
-          ? 'No matching dispatch found in system'
-          : 'AI flagged this for human verification',
-      },
-    });
+  // Split text into chunks delimited by leading date stamps
+  const re = /(\d{2}\/\d{2}\/\d{4})\s+([^\n]+?)\n([\s\S]*?)(?=\n\d{2}\/\d{2}\/\d{4}\s|\nSUBTOTAL|\nTOTAL\s|\n--\s|\nPage \d|$)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const date = m[1];
+    const firstLine = m[2].trim();
+    const rest = m[3];
+    const block = firstLine + '\n' + rest;
+
+    // Skip "DATE" header
+    if (/^DATE\s/i.test(firstLine)) continue;
+
+    // route: "FROM to TO"  (case-insensitive 'to', allowing wrap)
+    const routeM = /([A-Z][A-Za-z' ]+?)\s+to\s+([A-Z][A-Za-z' ]+?)(?:\s+Transaction|\s*\n|\s+After hours|\s+HS No)/i.exec(block);
+    let from = '', to = '';
+    if (routeM) {
+      from = titleCase(routeM[1].trim());
+      to = titleCase(routeM[2].trim());
+    }
+
+    // activity: the part of firstLine after the date that's NOT the route
+    let activity = firstLine;
+    if (routeM) {
+      const cutAt = firstLine.toUpperCase().indexOf(routeM[1].trim().toUpperCase());
+      if (cutAt > 0) activity = firstLine.slice(0, cutAt).trim();
+    }
+    activity = activity.replace(/\s+\d+$/, '').trim();
+
+    // transaction id (may span two lines: "DD25673772-\nROSA")
+    const txM = /Transaction ID\s+([A-Z0-9\.\-]+(?:-?\s*\n?\s*[A-Z]+)?)/i.exec(block);
+    let trip = '';
+    if (txM) {
+      trip = txM[1].replace(/\s+/g, '').replace(/-+/, '-');
+      // Combine wrapped suffix
+      if (/-$/.test(trip)) {
+        // shouldn't happen after the regex, but guard
+      }
+    }
+
+    // amount: the last "X.XX  X.XX" pair on the GST line is rate/amount
+    const amtM = /GST\s+\d+\s+[\d,]+\.\d{2}\s+([\d,]+\.\d{2})/i.exec(block);
+    const amount = amtM ? parseFloat(amtM[1].replace(/,/g, '')) : 0;
+
+    if (!from && !to && !trip && !amount) continue;
+
+    items.push({ date, activity, from, to, trip, amount });
   }
   return items;
 }
 
+// ---------- AI matching simulation ----------
+
+function classifyItems(items) {
+  // Realistic heuristic: most match, a few fail.
+  // Rules:
+  //  - Known no-match trips → 'no-match'
+  //  - "Futile" jobs → 'partial' (rate variance)
+  //  - Trips starting with "S2026." (manual job IDs, not dispatch) → 'no-match'
+  //  - Otherwise → 'matched'
+  let matched = 0, flagged = 0;
+  const out = items.map((it, i) => {
+    let match = 'matched';
+    let reason = null;
+    let systemAmount = null;
+    if (KNOWN_NO_MATCH_TRIPS.includes(it.trip)) {
+      match = 'no-match';
+      reason = 'Trip ID not found in dispatch records';
+    } else if (/futile/i.test(it.activity)) {
+      match = 'partial';
+      reason = 'Futile job — partial rate vs. rate card';
+      systemAmount = +(it.amount * 0.5).toFixed(2);
+    } else if (/^S\d{4}\./i.test(it.trip)) {
+      match = 'no-match';
+      reason = 'Manual job ID — no dispatch reference';
+    }
+    if (match === 'matched') matched++; else flagged++;
+    const refId = match === 'matched'
+      ? 'OD-' + (10000 + (i * 73 + 421) % 89999)
+      : null;
+    return {
+      cn: it.trip || `LN-${(i + 1).toString().padStart(3, '0')}`,
+      refId,
+      date: it.date,
+      from: it.from || '—',
+      to: it.to || '—',
+      desc: it.activity || 'Transport charge',
+      amount: it.amount,
+      match,
+      mismatch: match === 'matched' ? null : {
+        invoiceAmount: it.amount,
+        systemAmount,
+        reason,
+        expected: systemAmount != null
+          ? 'System rate is lower than invoiced'
+          : 'No matching dispatch found in system',
+      },
+    };
+  });
+  return { items: out, matched, flagged };
+}
+
+function decideOutcome(matched, flagged, total) {
+  if (flagged === 0) return 'approve';
+  // >=40% flagged → reject; otherwise review
+  if (flagged / total >= 0.4) return 'reject';
+  return 'review';
+}
+
+function formatDateISO(ddmmyyyy) {
+  if (!ddmmyyyy) return new Date().toISOString().slice(0, 10);
+  const [d, m, y] = ddmmyyyy.split(/[\/\-\s]/);
+  if (!d || !m || !y) return new Date().toISOString().slice(0, 10);
+  return `${y.length === 2 ? '20' + y : y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+}
+
+// ---------- Modal component ----------
+
 function UploadModal({ onClose, onComplete }) {
   const [file, setFile] = React.useState(null);
-  const [phase, setPhase] = React.useState('select'); // select | processing | result
+  const [phase, setPhase] = React.useState('select');
   const [step, setStep] = React.useState(0);
   const [dragOver, setDragOver] = React.useState(false);
   const [extraction, setExtraction] = React.useState(null);
+  const [error, setError] = React.useState(null);
 
   const inputRef = React.useRef(null);
 
-  const onFile = (f) => { if (f) setFile(f); };
+  const onFile = (f) => { if (f) { setFile(f); setError(null); } };
 
-  const start = () => {
+  const start = async () => {
     if (!file) return;
     setPhase('processing');
     setStep(0);
+    setError(null);
 
-    // Pre-compute the extraction so the result is deterministic for this run
-    const ex = buildExtraction(file);
-    setExtraction(ex);
+    // Step 1: read PDF
+    setTimeout(() => setStep(1), 400);
+    let parsed;
+    try {
+      parsed = await readPdfText(file);
+    } catch (e) {
+      setError('Could not read this PDF. Please upload a text-based invoice.');
+      setPhase('select');
+      return;
+    }
 
-    // 4-step pipeline timing
-    const stepDelays = [500, 700, 800, 600];
-    let cumulative = 0;
-    stepDelays.forEach((d, i) => {
-      cumulative += d;
-      setTimeout(() => setStep(i + 1), cumulative);
-    });
+    // Step 2: extract fields
+    await new Promise(r => setTimeout(r, 400));
+    setStep(2);
+    const fields = extractFields(parsed.text);
+    const lineItemsRaw = extractLineItems(parsed.text);
 
-    setTimeout(() => setPhase('result'), cumulative + 350);
+    // Step 3: match
+    await new Promise(r => setTimeout(r, 600));
+    setStep(3);
+    const { items, matched, flagged } = classifyItems(lineItemsRaw);
+    const total = items.length;
+    const outcome = decideOutcome(matched, flagged, total);
+
+    // Step 4: generate suggestion
+    await new Promise(r => setTimeout(r, 500));
+    setStep(4);
+
+    const computedAmount = fields.amount || items.reduce((s, x) => s + x.amount, 0);
+
+    let summary;
+    if (outcome === 'approve') summary = { type: 'matched', text: `${matched} matched` };
+    else if (outcome === 'review') summary = { type: 'matched', text: `${matched} matched` };
+    else summary = { type: 'notfound', text: `${flagged} flagged` };
+
+    const confidence = Math.max(45, Math.round(100 - (flagged / Math.max(total, 1)) * 60 - Math.random() * 4));
+
+    // Create a blob URL so the detail-view PDF renderer can load the actual file
+    const pdfUrl = URL.createObjectURL(file);
+
+    const invoice = {
+      id: 'inv-' + Date.now(),
+      carrier: fields.carrier || '(Unknown carrier)',
+      invoiceNo: fields.invoiceNo || 'N/A',
+      invoiceDate: fields.invoiceDate || new Date().toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceDateISO: fields.invoiceDateISO || new Date().toISOString().slice(0, 10),
+      amount: computedAmount,
+      aiSuggestion: outcome,
+      summary,
+      status: outcome === 'approve' ? 'approved' : outcome === 'reject' ? 'rejected' : 'review',
+      pdfFile: file.name,
+      pdfUrl,            // <-- blob URL, takes priority in detail view
+      lineItemsTotal: total,
+      lineItemsMatched: matched,
+      lineItemsFlagged: flagged,
+      pages: parsed.pageCount,
+      abn: fields.abn || '',
+      isUploaded: true,
+      confidence,
+    };
+
+    await new Promise(r => setTimeout(r, 350));
+    setExtraction({ file, outcome, invoice, items });
+    setPhase('result');
   };
 
   const confirm = () => {
-    const items = buildLineItems(extraction.invoice, extraction.outcome);
-    onComplete(extraction.invoice, items);
+    onComplete(extraction.invoice, extraction.items);
   };
 
-  // Outcome display helpers
   const outcomeMeta = (o) => {
     if (o === 'approve') return {
       title: 'Auto-approved',
@@ -259,6 +394,12 @@ function UploadModal({ onClose, onComplete }) {
                 >
                   {Icon.x(14)}
                 </button>
+              </div>
+            )}
+
+            {error && (
+              <div style={{ padding: '8px 12px', background: 'rgba(244, 67, 54, 0.1)', color: '#C62828', borderRadius: 6, fontSize: 12, marginTop: 8 }}>
+                {error}
               </div>
             )}
 
@@ -334,7 +475,7 @@ function UploadModal({ onClose, onComplete }) {
                 </div>
                 <div className="extract-row">
                   <span className="k">ABN</span>
-                  <span className="v mono">{inv.abn}</span>
+                  <span className="v mono">{inv.abn || '—'}</span>
                 </div>
                 <div className="extract-row">
                   <span className="k">Total amount</span>
