@@ -1,5 +1,14 @@
 // Invoice detail screen — PDF preview + line items
-function PdfJsViewer({ file, page, zoom, masks }) {
+
+// Convert a point (px, py) in PDF user-space (origin bottom-left) to canvas
+// pixel coords (origin top-left) for the given viewport.
+function pdfPointToCanvas(px, py, viewport) {
+  // viewport.transform = [a, b, c, d, e, f] applied as [a*px + c*py + e, b*px + d*py + f]
+  const [a, b, c, d, e, f] = viewport.transform;
+  return [a * px + c * py + e, b * px + d * py + f];
+}
+
+function PdfJsViewer({ file, page, zoom, masks, redact }) {
   const canvasRef = React.useRef(null);
   const renderTaskRef = React.useRef(null);
   const [error, setError] = React.useState(null);
@@ -61,6 +70,43 @@ function PdfJsViewer({ file, page, zoom, masks }) {
             ctx.fillRect(x, y, w, h);
           }
         }
+        // Programmatic text redaction: find matching strings in the page's text content
+        // and overlay white + replacement text. `redact` is an array of {pattern, replace}.
+        if (redact && redact.length) {
+          try {
+            const tc = await pdfPage.getTextContent();
+            for (const item of tc.items) {
+              const str = item.str || '';
+              for (const rule of redact) {
+                const re = rule.pattern instanceof RegExp ? rule.pattern : new RegExp(rule.pattern, 'i');
+                if (re.test(str)) {
+                  const tx = item.transform;
+                  const fontHeight = Math.hypot(tx[2], tx[3]);
+                  const [cx1, cy1] = pdfPointToCanvas(tx[4], tx[5] + fontHeight, viewport);
+                  const [cx2, cy2] = pdfPointToCanvas(tx[4] + item.width, tx[5], viewport);
+                  const x = Math.min(cx1, cx2);
+                  const y = Math.min(cy1, cy2);
+                  const w = Math.abs(cx2 - cx1);
+                  const h = Math.abs(cy2 - cy1);
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(x - 1, y - 1, w + 2, h + 3);
+                  if (rule.replace !== undefined && rule.replace !== null) {
+                    const replacement = typeof rule.replace === 'function' ? rule.replace(str) : rule.replace;
+                    ctx.fillStyle = '#000000';
+                    const pxFont = fontHeight * viewport.scale;
+                    ctx.font = `${pxFont}px Helvetica, Arial, sans-serif`;
+                    ctx.textBaseline = 'alphabetic';
+                    const [, baselineY] = pdfPointToCanvas(tx[4], tx[5], viewport);
+                    ctx.fillText(replacement, Math.min(cx1, cx2), baselineY);
+                  }
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('Redact failed:', e);
+          }
+        }
         setLoading(false);
       } catch (e) {
         if (e && e.name === 'RenderingCancelledException') return;
@@ -74,7 +120,7 @@ function PdfJsViewer({ file, page, zoom, masks }) {
         try { renderTaskRef.current.cancel(); } catch (_) {}
       }
     };
-  }, [file, page, zoom, masks]);
+  }, [file, page, zoom, masks, redact]);
 
   return (
     <div style={{
@@ -157,6 +203,20 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
                   // Cover the "Invoice To" address block on page 1 only
                   1: [{ x: 0.03, y: 0.16, w: 0.34, h: 0.115 }]
                 } : null}
+                redact={invoice.pdfFile === 'Dickies invoice.pdf' ? [
+                  // Specific phrases first; order matters (longer/more specific before generic).
+                  { pattern: /^CoatesHire PTY LTD$/i, replace: 'Carrier Hub PTY LTD' },
+                  { pattern: /^COATESHIRE$/i, replace: 'CARRIERHUB' },
+                  { pattern: /^Coates Beresfield$/i, replace: 'Hub Beresfield' },
+                  { pattern: /^Coates Lambton$/i, replace: 'Hub Lambton' },
+                  { pattern: /^Coates Maitland$/i, replace: 'Hub Maitland' },
+                  { pattern: /^Coates NSPE$/i, replace: 'Hub NSPE' },
+                  { pattern: /^Coates Thornton$/i, replace: 'Hub Thornton' },
+                  { pattern: /^Coates Transfer Charge$/i, replace: 'Site Transfer Charge' },
+                  { pattern: /^Coates Wait Charge$/i, replace: 'Vehicle Wait Charge' },
+                  // Catch-all: anything else starting with "Coates"
+                  { pattern: /\bcoates\b/i, replace: (s) => s.replace(/coates/ig, 'Hub') },
+                ] : null}
               />
             ) : (
               <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
