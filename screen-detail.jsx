@@ -194,12 +194,12 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
             <button title="Fullscreen">{Icon.expand(13)}</button>
           </div>
           <div className="pdf-body">
-            {(invoice.pdfFile === 'Dickies invoice.pdf' || invoice.pdfUrl) ? (
+            {(invoice.pdfFile === 'Dickies invoice.pdf' || invoice.pdfFile === 'Example 3 invoice.pdf' || invoice.pdfUrl) ? (
               <PdfJsViewer
                 file={invoice.pdfUrl || invoice.pdfFile}
                 page={pdfPage}
                 zoom={zoom}
-                masks={invoice.carrier === 'Red Hot Transit' ? {
+                masks={(invoice.carrier === 'Red Hot Transit' || invoice.pdfFile === 'Example 3 invoice.pdf') ? {
                   // Cover the "Invoice To" address block on page 1 only
                   1: [{ x: 0.03, y: 0.16, w: 0.34, h: 0.115 }]
                 } : null}
