@@ -1,4 +1,96 @@
 // Invoice detail screen — PDF preview + line items
+function PdfJsViewer({ file, page, zoom }) {
+  const canvasRef = React.useRef(null);
+  const renderTaskRef = React.useRef(null);
+  const [error, setError] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function ensurePdfJs() {
+      if (window.pdfjsLib) return window.pdfjsLib;
+      await new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-pdfjs]');
+        if (existing) { existing.addEventListener('load', resolve); existing.addEventListener('error', reject); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        s.dataset.pdfjs = '1';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      // Worker is blocked in sandboxed iframes — render on main thread instead.
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+      return window.pdfjsLib;
+    }
+
+    (async () => {
+      try {
+        setLoading(true);
+        const pdfjsLib = await ensurePdfJs();
+        if (cancelled) return;
+        const pdf = await pdfjsLib.getDocument({ url: file, disableWorker: true }).promise;
+        if (cancelled) return;
+        const pdfPage = await pdf.getPage(Math.min(page, pdf.numPages));
+        if (cancelled) return;
+        const scale = (zoom / 80) * 1.5;
+        const viewport = pdfPage.getViewport({ scale });
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        // Cancel any in-flight render before resizing canvas (resize clears it)
+        if (renderTaskRef.current) {
+          try { renderTaskRef.current.cancel(); } catch (_) {}
+        }
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        const ctx = canvas.getContext('2d');
+        const task = pdfPage.render({ canvasContext: ctx, viewport });
+        renderTaskRef.current = task;
+        await task.promise;
+        if (cancelled) return;
+        renderTaskRef.current = null;
+        setLoading(false);
+      } catch (e) {
+        if (e && e.name === 'RenderingCancelledException') return;
+        console.error('PDF render error', e);
+        if (!cancelled) { setError(e.message || 'Failed to load PDF'); setLoading(false); }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (renderTaskRef.current) {
+        try { renderTaskRef.current.cancel(); } catch (_) {}
+      }
+    };
+  }, [file, page, zoom]);
+
+  return (
+    <div style={{
+      width: '100%', height: '100%',
+      overflow: 'auto', display: 'flex',
+      justifyContent: 'center', padding: 12,
+      background: '#F1F5F9',
+    }}>
+      {error ? (
+        <div style={{ color: '#A4221F', padding: 20 }}>Could not load PDF: {error}</div>
+      ) : (
+        <canvas
+          ref={canvasRef}
+          style={{
+            background: '#fff',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+            opacity: loading ? 0.4 : 1,
+            transition: 'opacity 0.15s',
+            maxWidth: '100%',
+            height: 'auto',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Invoice detail screen — PDF preview + line items
 function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
   const [filter, setFilter] = React.useState('all'); // all | flagged | matched
   const [openMismatch, setOpenMismatch] = React.useState(null); // index of open popup
@@ -44,62 +136,70 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
             <button title="Fullscreen">{Icon.expand(13)}</button>
           </div>
           <div className="pdf-body">
-            <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
-              <div className="pdf-banner">
-                <div className="logo">{invoice.carrier.split(' ')[0].toUpperCase()}</div>
-                <div style={{ fontSize: 7, textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700 }}>TAX INVOICE</div>
-                  <div>No. {invoice.invoiceNo}</div>
-                </div>
-              </div>
-              <div className="pdf-content">
-                <h3>TAX INVOICE SUMMARY</h3>
-                <div className="meta-grid">
-                  <div>
-                    <b>Bill To</b>
-                    <div>Coates Hire Operations Pty Ltd</div>
-                    <div>Level 1, 18 Rodborough Rd</div>
-                    <div>Frenchs Forest NSW 2086</div>
-                  </div>
-                  <div>
-                    <b>Invoice Details</b>
-                    <div>No: {invoice.invoiceNo}</div>
-                    <div>Date: {invoice.invoiceDate}</div>
-                    <div>ABN: {invoice.abn}</div>
+            {(invoice.pdfFile === 'Dickies invoice.pdf' || invoice.pdfUrl) ? (
+              <PdfJsViewer
+                file={invoice.pdfUrl || invoice.pdfFile}
+                page={pdfPage}
+                zoom={zoom}
+              />
+            ) : (
+              <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
+                <div className="pdf-banner">
+                  <div className="logo">{invoice.carrier.split(' ')[0].toUpperCase()}</div>
+                  <div style={{ fontSize: 7, textAlign: 'right' }}>
+                    <div style={{ fontWeight: 700 }}>TAX INVOICE</div>
+                    <div>No. {invoice.invoiceNo}</div>
                   </div>
                 </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>CN#</th>
-                      <th>Route</th>
-                      <th style={{ textAlign: 'right' }}>Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.slice(0, 8).map((l, i) => (
-                      <tr key={i}>
-                        <td>{l.cn}</td>
-                        <td>{l.from} → {l.to}</td>
-                        <td className="right">{l.amount.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                    {items.length > 8 && (
+                <div className="pdf-content">
+                  <h3>TAX INVOICE SUMMARY</h3>
+                  <div className="meta-grid">
+                    <div>
+                      <b>Bill To</b>
+                      <div>Coates Hire Operations Pty Ltd</div>
+                      <div>Level 1, 18 Rodborough Rd</div>
+                      <div>Frenchs Forest NSW 2086</div>
+                    </div>
+                    <div>
+                      <b>Invoice Details</b>
+                      <div>No: {invoice.invoiceNo}</div>
+                      <div>Date: {invoice.invoiceDate}</div>
+                      <div>ABN: {invoice.abn}</div>
+                    </div>
+                  </div>
+                  <table>
+                    <thead>
                       <tr>
-                        <td colSpan={3} style={{ textAlign: 'center', color: '#94A3B8', fontStyle: 'italic' }}>
-                          + {items.length - 8} more line items...
-                        </td>
+                        <th>CN#</th>
+                        <th>Route</th>
+                        <th style={{ textAlign: 'right' }}>Amount</th>
                       </tr>
-                    )}
-                  </tbody>
-                </table>
-                <div className="totals">
-                  <div className="row"><span>Subtotal (ex GST)</span><span>{(invoice.amount / 1.1).toFixed(2)}</span></div>
-                  <div className="row"><span>GST 10%</span><span>{(invoice.amount - invoice.amount / 1.1).toFixed(2)}</span></div>
-                  <div className="row grand"><span>Total payable AUD</span><span>${invoice.amount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</span></div>
+                    </thead>
+                    <tbody>
+                      {items.slice(0, 8).map((l, i) => (
+                        <tr key={i}>
+                          <td>{l.cn}</td>
+                          <td>{l.from} → {l.to}</td>
+                          <td className="right">{l.amount.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                      {items.length > 8 && (
+                        <tr>
+                          <td colSpan={3} style={{ textAlign: 'center', color: '#94A3B8', fontStyle: 'italic' }}>
+                            + {items.length - 8} more line items...
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  <div className="totals">
+                    <div className="row"><span>Subtotal (ex GST)</span><span>{(invoice.amount / 1.1).toFixed(2)}</span></div>
+                    <div className="row"><span>GST 10%</span><span>{(invoice.amount - invoice.amount / 1.1).toFixed(2)}</span></div>
+                    <div className="row grand"><span>Total payable AUD</span><span>${invoice.amount.toLocaleString('en-AU', { minimumFractionDigits: 2 })}</span></div>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 

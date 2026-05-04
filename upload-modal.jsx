@@ -26,7 +26,76 @@ function UploadModal({ onClose, onComplete }) {
     });
 
     setTimeout(() => {
-      // Build a new invoice row from the uploaded file
+      // Detect known invoices by filename
+      const fname = file.name.toLowerCase();
+      const isRedHot = fname.includes('example 3') || fname.includes('red hot') || fname.includes('redhot');
+
+      if (isRedHot) {
+        // Pre-canned Red Hot Transit invoice — matches the actual PDF content
+        const fileUrl = URL.createObjectURL(file);
+        onComplete({
+          id: 'inv-redhot-' + Date.now(),
+          carrier: 'Red Hot Transit',
+          invoiceNo: '17196',
+          invoiceDate: '20 Feb 2026',
+          invoiceDateISO: '2026-02-20',
+          amount: 700.23,
+          aiSuggestion: 'review',
+          summary: { type: 'partial', text: '23 matched · 5 flagged' },
+          status: 'review',
+          pdfFile: file.name,
+          pdfUrl: fileUrl,
+          lineItemsTotal: 28,
+          lineItemsMatched: 23,
+          lineItemsFlagged: 5,
+          pages: 3,
+          abn: '54 123 456 789',
+          isUploaded: true,
+          // Embed the line items directly for this seeded invoice
+          _seedLineItems: [
+            { cn: 'S2026.10502HS', refId: '—', date: '16/02/2026', from: '8 Tonne Hiab Ingleburn', to: 'EASTERN CREEK',
+              desc: '8 Tonne Hiab Ingleburn to EASTERN CREEK GST 1 500.00 500.00',
+              amount: 500.00, match: 'no-match',
+              mismatch: { invoiceAmount: 500.00, systemAmount: null, reason: 'No matching dispatch record found',
+                expected: 'No POD or order reference matches this charge.' } },
+            { cn: 'DD25673055-PENR', refId: '—', date: '17/02/2026', from: 'Tow Axle Moorebank', to: 'NORTH',
+              desc: 'Tow Axle Moorebank to NORTH GST 1 200.00 200.00',
+              amount: 200.00, match: 'no-match',
+              mismatch: { invoiceAmount: 200.00, systemAmount: null, reason: 'No matching dispatch record found',
+                expected: 'CN DD25673055-PENR has no corresponding trip in Settlements.' } },
+            { cn: 'DD25677006-GLDV', refId: '—', date: '19/02/2026', from: '1 Tonne Futile MANLY', to: 'Gladesville',
+              desc: '1 Tonne Futile MANLY to Gladesville GST 1 41.25 41.25',
+              amount: 41.25, match: 'partial',
+              mismatch: { invoiceAmount: 41.25, systemAmount: 35.00, reason: 'Futile delivery surcharge above contracted rate',
+                expected: 'Contracted futile fee is $35.00 — invoice charges $6.25 extra.' } },
+            { cn: 'S2026.11751HS', refId: '—', date: '19/02/2026', from: '6 Tonne Futile POTTS POINT', to: 'Moorebank',
+              desc: '6 Tonne Futile POTTS POINT to Moorebank GST 1 192.50 192.50',
+              amount: 192.50, match: 'partial',
+              mismatch: { invoiceAmount: 192.50, systemAmount: 165.00, reason: 'Futile fee mismatch',
+                expected: 'Rate card 6T futile = $165 — $27.50 over.' } },
+            { cn: 'LN-024', refId: '—', date: '20/02/2026', from: 'Rigid Tilt Tray Futile Ingleburn', to: 'Georges Hall',
+              desc: 'Rigid Tilt Tray Futile Ingleburn to Georges hall GST 1 285.00 285.00',
+              amount: 285.00, match: 'partial',
+              mismatch: { invoiceAmount: 285.00, systemAmount: 240.00, reason: 'Tilt tray futile above contract',
+                expected: 'Contract rate $240 — invoice billed $45 extra.' } },
+            // 23 matched line items
+            ...Array.from({ length: 23 }, (_, i) => ({
+              cn: `RHT-${(20100 + i).toString()}`,
+              refId: `OD-${(50000 + i).toString()}`,
+              tripId: `RHT-${(20100 + i).toString()}`,
+              date: `${15 + (i % 6)}/02/2026`,
+              from: ['Ingleburn', 'Moorebank', 'Eastern Creek', 'Sydney', 'Bankstown'][i % 5],
+              to: ['Penrith', 'Liverpool', 'Parramatta', 'Manly', 'Bondi'][i % 5],
+              desc: ['4 Tonne', '6 Tonne', '8 Tonne Hiab', 'Rigid Tilt Tray', '1 Tonne'][i % 5] + ' delivery',
+              amount: Math.round((40 + Math.random() * 460) * 100) / 100,
+              match: 'matched',
+            })),
+          ],
+        });
+        return;
+      }
+
+      // Build a generic new invoice row from the uploaded file
       const carriers = [
         'CENTURION TRANSPORT',
         'RIVET MINING SERVICES',
@@ -51,6 +120,7 @@ function UploadModal({ onClose, onComplete }) {
         summary: { type: 'partial', text: `${flaggedCount} to review` },
         status: 'review',
         pdfFile: file.name,
+        pdfUrl: URL.createObjectURL(file),
         lineItemsTotal: matchedCount + flaggedCount,
         lineItemsMatched: matchedCount,
         lineItemsFlagged: flaggedCount,

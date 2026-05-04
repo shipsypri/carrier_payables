@@ -46,6 +46,17 @@
       };
 
       const onUploadComplete = (newInv) => {
+        // If the upload provides pre-built line items (e.g. recognised invoice), use those.
+        if (newInv._seedLineItems) {
+          const seeded = newInv._seedLineItems;
+          const cleanInv = { ...newInv };
+          delete cleanInv._seedLineItems;
+          setInvoices(prev => [cleanInv, ...prev]);
+          setLineItems(prev => ({ ...prev, [cleanInv.id]: seeded }));
+          setShowUpload(false);
+          showToast(`Invoice processed — ${cleanInv.carrier} added to Review`, 'success');
+          return;
+        }
         setInvoices(prev => [newInv, ...prev]);
         // Generate a few mock line items for the new invoice
         const sampleRoutes = [
@@ -81,30 +92,6 @@
 
       return (
         <>
-          <div className="topbar">
-            <div className="menu-btn" title="Menu">{Icon.menu(16)}</div>
-            <div className="crumbs">
-              <span className="pri">Coates Settlements</span>
-              <span className="sep">|</span>
-              <a href="../settlements/index.html" className="product-link" title="Switch to Settlements">
-                Settlements {Icon.ext(10)}
-              </a>
-              <span className="sep">|</span>
-              <span className="sec">Carrier Payables · {route.name === 'detail' ? 'Invoice Detail' : 'Reconciliation'}</span>
-            </div>
-            <div className="right">
-              <div className="date-pill">
-                <span className="label">Billing</span>
-                <span>20 Jan – 19 Feb 2026</span>
-                {Icon.chevDown(11)}
-              </div>
-              <div className="icon-btn" title="Beta">{Icon.beta(11)}</div>
-              <div className="icon-btn" title="Help">{Icon.help(15)}</div>
-              <div className="icon-btn" title="Notifications">{Icon.bell(15)}</div>
-              <div className="avatar">AD</div>
-            </div>
-          </div>
-
           {route.name === 'list' && (
             <ListScreen
               invoices={invoices}
