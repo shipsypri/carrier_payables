@@ -1,15 +1,8 @@
 // Carrier Payables list screen
-function ListScreen({ invoices, onOpenDetail, onOpenUpload, onApprove, onReject, forceTab, highlightId }) {
+function ListScreen({ invoices, onOpenDetail, onOpenUpload, onApprove, onReject }) {
   const [tab, setTab] = React.useState('review');
   const [search, setSearch] = React.useState('');
   const [selected, setSelected] = React.useState(new Set());
-
-  // When the parent asks us to switch tabs (e.g. after an AI upload),
-  // honor that — the `token` changes per request so re-applying the same
-  // tab still triggers the effect.
-  React.useEffect(() => {
-    if (forceTab && forceTab.tab) setTab(forceTab.tab);
-  }, [forceTab && forceTab.token]);
 
   const counts = React.useMemo(() => ({
     review: invoices.filter(i => i.status === 'review').length,
@@ -142,7 +135,7 @@ function ListScreen({ invoices, onOpenDetail, onOpenUpload, onApprove, onReject,
             </thead>
             <tbody>
               {filtered.map(inv => (
-                <tr key={inv.id} className={highlightId === inv.id ? 'row-new' : ''}>
+                <tr key={inv.id}>
                   {showCheckbox && (
                     <td>
                       <input

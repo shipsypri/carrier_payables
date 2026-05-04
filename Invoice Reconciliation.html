@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Invoice Reconciliation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="data.js"></script>
+  <script type="text/babel" src="icons.jsx"></script>
+  <script type="text/babel" src="screen-list.jsx"></script>
+  <script type="text/babel" src="screen-detail.jsx"></script>
+  <script type="text/babel" src="upload-modal.jsx"></script>
+
+  <script type="text/babel">
+    function App() {
+      const [invoices, setInvoices] = React.useState(window.SEED_INVOICES);
+      const [lineItems, setLineItems] = React.useState(window.LINE_ITEMS);
+      const [route, setRoute] = React.useState({ name: 'list', invoiceId: null });
+      const [showUpload, setShowUpload] = React.useState(false);
+      const [toast, setToast] = React.useState(null);
+
+      const showToast = (msg, kind = 'success') => {
+        setToast({ msg, kind });
+        setTimeout(() => setToast(null), 2400);
+      };
+
+      const onApprove = (id) => {
+        setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'approved' } : i));
+        const inv = invoices.find(i => i.id === id);
+        showToast(`Approved ${inv ? inv.carrier : 'invoice'}`, 'success');
+      };
+      const onReject = (id) => {
+        setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'rejected' } : i));
+        const inv = invoices.find(i => i.id === id);
+        showToast(`Rejected ${inv ? inv.carrier : 'invoice'}`, 'error');
+      };
+
+      const onUploadComplete = (newInv) => {
+        setInvoices(prev => [newInv, ...prev]);
+        // Generate a few mock line items for the new invoice
+        const sampleRoutes = [
+          ['Sydney', 'Newcastle'], ['Melbourne', 'Geelong'], ['Brisbane', 'Toowoomba'],
+          ['Perth', 'Fremantle'], ['Adelaide', 'Mount Barker'],
+        ];
+        const newItems = [];
+        for (let i = 0; i < newInv.lineItemsTotal; i++) {
+          const r = sampleRoutes[i % sampleRoutes.length];
+          const isMatched = i < newInv.lineItemsMatched;
+          newItems.push({
+            cn: 'UP-' + (10000 + i),
+            refId: isMatched ? 'OD-' + (90000 + i) : null,
+            date: newInv.invoiceDate,
+            from: r[0], to: r[1],
+            desc: 'Auto-extracted line item',
+            amount: 5000 + Math.random() * 35000,
+            match: isMatched ? 'matched' : (Math.random() > 0.5 ? 'no-match' : 'partial'),
+            mismatch: isMatched ? null : {
+              invoiceAmount: 12000 + Math.random() * 8000,
+              systemAmount: Math.random() > 0.5 ? null : 10000 + Math.random() * 5000,
+              reason: 'Awaiting human review',
+              expected: 'AI flagged this for manual verification',
+            },
+          });
+        }
+        setLineItems(prev => ({ ...prev, [newInv.id]: newItems }));
+        setShowUpload(false);
+        showToast(`Invoice processed — ${newInv.carrier} added to Review`, 'success');
+      };
+
+      const currentInvoice = route.name === 'detail' ? invoices.find(i => i.id === route.invoiceId) : null;
+
+      return (
+        <>
+          <div className="topbar">
+            <div className="menu-btn" title="Menu">{Icon.menu(16)}</div>
+            <div className="crumbs">
+              <span className="pri">Coates Settlements</span>
+              <span className="sep">|</span>
+              <a href="../settlements/index.html" className="product-link" title="Switch to Settlements">
+                Settlements {Icon.ext(10)}
+              </a>
+              <span className="sep">|</span>
+              <span className="sec">Carrier Payables · {route.name === 'detail' ? 'Invoice Detail' : 'Reconciliation'}</span>
+            </div>
+            <div className="right">
+              <div className="date-pill">
+                <span className="label">Billing</span>
+                <span>20 Jan – 19 Feb 2026</span>
+                {Icon.chevDown(11)}
+              </div>
+              <div className="icon-btn" title="Beta">{Icon.beta(11)}</div>
+              <div className="icon-btn" title="Help">{Icon.help(15)}</div>
+              <div className="icon-btn" title="Notifications">{Icon.bell(15)}</div>
+              <div className="avatar">AD</div>
+            </div>
+          </div>
+
+          {route.name === 'list' && (
+            <ListScreen
+              invoices={invoices}
+              onOpenDetail={(id) => setRoute({ name: 'detail', invoiceId: id })}
+              onOpenUpload={() => setShowUpload(true)}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
+          )}
+
+          {route.name === 'detail' && currentInvoice && (
+            <DetailScreen
+              invoice={currentInvoice}
+              lineItems={lineItems[currentInvoice.id] || []}
+              onBack={() => setRoute({ name: 'list', invoiceId: null })}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
+          )}
+
+          {showUpload && (
+            <UploadModal
+              onClose={() => setShowUpload(false)}
+              onComplete={onUploadComplete}
+            />
+          )}
+
+          {toast && (
+            <div className={`toast ${toast.kind}`}>
+              {toast.kind === 'success' ? Icon.check(14) : Icon.x(14)}
+              {toast.msg}
+            </div>
+          )}
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
