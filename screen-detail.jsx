@@ -1,5 +1,5 @@
 // Invoice detail screen — PDF preview + line items
-function PdfJsViewer({ file, page, zoom }) {
+function PdfJsViewer({ file, page, zoom, masks }) {
   const canvasRef = React.useRef(null);
   const renderTaskRef = React.useRef(null);
   const [error, setError] = React.useState(null);
@@ -49,6 +49,18 @@ function PdfJsViewer({ file, page, zoom }) {
         await task.promise;
         if (cancelled) return;
         renderTaskRef.current = null;
+        // Apply white masks over PDF after render to hide redacted regions.
+        // Masks are specified as fractions (0-1) of canvas width/height for the given page.
+        if (masks && masks[page]) {
+          ctx.fillStyle = '#ffffff';
+          for (const m of masks[page]) {
+            const x = m.x * canvas.width;
+            const y = m.y * canvas.height;
+            const w = m.w * canvas.width;
+            const h = m.h * canvas.height;
+            ctx.fillRect(x, y, w, h);
+          }
+        }
         setLoading(false);
       } catch (e) {
         if (e && e.name === 'RenderingCancelledException') return;
@@ -62,7 +74,7 @@ function PdfJsViewer({ file, page, zoom }) {
         try { renderTaskRef.current.cancel(); } catch (_) {}
       }
     };
-  }, [file, page, zoom]);
+  }, [file, page, zoom, masks]);
 
   return (
     <div style={{
@@ -141,6 +153,10 @@ function DetailScreen({ invoice, lineItems, onBack, onApprove, onReject }) {
                 file={invoice.pdfUrl || invoice.pdfFile}
                 page={pdfPage}
                 zoom={zoom}
+                masks={invoice.carrier === 'Red Hot Transit' ? {
+                  // Cover the "Invoice To" address block on page 1 only
+                  1: [{ x: 0.03, y: 0.16, w: 0.34, h: 0.115 }]
+                } : null}
               />
             ) : (
               <div className="pdf-page" style={{ transform: `scale(${zoom / 80})`, transformOrigin: 'top center' }}>
