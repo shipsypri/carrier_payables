@@ -28,10 +28,15 @@
       const [route, setRoute] = React.useState({ name: 'list', invoiceId: null });
       const [showUpload, setShowUpload] = React.useState(false);
       const [toast, setToast] = React.useState(null);
+      // Tab to force the list onto (e.g. after an upload). Bumps a token so
+      // the same tab can be re-applied across multiple uploads.
+      const [forceTab, setForceTab] = React.useState({ tab: null, token: 0 });
+      // Highlight a row briefly after upload so the user can spot it.
+      const [highlightId, setHighlightId] = React.useState(null);
 
       const showToast = (msg, kind = 'success') => {
         setToast({ msg, kind });
-        setTimeout(() => setToast(null), 2400);
+        setTimeout(() => setToast(null), 2800);
       };
 
       const onApprove = (id) => {
@@ -45,36 +50,27 @@
         showToast(`Rejected ${inv ? inv.carrier : 'invoice'}`, 'error');
       };
 
-      const onUploadComplete = (newInv) => {
+      const onUploadComplete = (newInv, items) => {
         setInvoices(prev => [newInv, ...prev]);
-        // Generate a few mock line items for the new invoice
-        const sampleRoutes = [
-          ['Sydney', 'Newcastle'], ['Melbourne', 'Geelong'], ['Brisbane', 'Toowoomba'],
-          ['Perth', 'Fremantle'], ['Adelaide', 'Mount Barker'],
-        ];
-        const newItems = [];
-        for (let i = 0; i < newInv.lineItemsTotal; i++) {
-          const r = sampleRoutes[i % sampleRoutes.length];
-          const isMatched = i < newInv.lineItemsMatched;
-          newItems.push({
-            cn: 'UP-' + (10000 + i),
-            refId: isMatched ? 'OD-' + (90000 + i) : null,
-            date: newInv.invoiceDate,
-            from: r[0], to: r[1],
-            desc: 'Auto-extracted line item',
-            amount: 5000 + Math.random() * 35000,
-            match: isMatched ? 'matched' : (Math.random() > 0.5 ? 'no-match' : 'partial'),
-            mismatch: isMatched ? null : {
-              invoiceAmount: 12000 + Math.random() * 8000,
-              systemAmount: Math.random() > 0.5 ? null : 10000 + Math.random() * 5000,
-              reason: 'Awaiting human review',
-              expected: 'AI flagged this for manual verification',
-            },
-          });
-        }
-        setLineItems(prev => ({ ...prev, [newInv.id]: newItems }));
+        setLineItems(prev => ({ ...prev, [newInv.id]: items || [] }));
         setShowUpload(false);
-        showToast(`Invoice processed — ${newInv.carrier} added to Review`, 'success');
+
+        // Jump the list to the tab the AI sorted this invoice into.
+        const targetTab =
+          newInv.status === 'approved' ? 'approved' :
+          newInv.status === 'rejected' ? 'rejected' : 'review';
+        setForceTab({ tab: targetTab, token: Date.now() });
+        setHighlightId(newInv.id);
+        setTimeout(() => setHighlightId(null), 3000);
+
+        // Toast — wording matches the AI's decision
+        if (newInv.status === 'approved') {
+          showToast(`AI auto-approved ${newInv.carrier} — moved to Approved`, 'success');
+        } else if (newInv.status === 'rejected') {
+          showToast(`AI flagged ${newInv.carrier} for rejection — moved to Rejected`, 'error');
+        } else {
+          showToast(`${newInv.carrier} added to Review queue`, 'success');
+        }
       };
 
       const currentInvoice = route.name === 'detail' ? invoices.find(i => i.id === route.invoiceId) : null;
@@ -96,6 +92,8 @@
               onOpenUpload={() => setShowUpload(true)}
               onApprove={onApprove}
               onReject={onReject}
+              forceTab={forceTab}
+              highlightId={highlightId}
             />
           )}
 

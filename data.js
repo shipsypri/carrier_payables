@@ -10,7 +10,7 @@ window.SEED_INVOICES = [
     invoiceDateISO: '2026-02-16',
     amount: 16914.68,
     aiSuggestion: 'review',
-    summary: { type: 'notfound', text: '67 not found' },
+    summary: { type: 'matched', text: '5 matched' },
     status: 'review',          // review | approved | rejected
     pdfFile: 'Dickies invoice.pdf',
     lineItemsTotal: 67,
